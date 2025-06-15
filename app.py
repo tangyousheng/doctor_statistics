@@ -49,7 +49,7 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         df = df.loc[mask]
 
     # 检查必要列是否存在
-    required_columns = ['就诊医生', '身份证号', '是否本机构建档', '是否外机构建档', '是否本机构签约', '是否外机构签约']
+    required_columns = ['诊疗医生', '身份证号', '是否本机构建档', '是否外机构建档', '是否本机构签约', '是否外机构签约']
     missing_cols = [col for col in required_columns if col not in df.columns]
 
     if missing_cols:
@@ -57,8 +57,8 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         return pd.DataFrame(), None, None
 
     # 计算每个医生的统计指标 - 修复分组逻辑
-    grouped = df.groupby('就诊医生', as_index=False).agg(
-        总就诊人数=('身份证号', 'count'),
+    grouped = df.groupby('诊疗医生', as_index=False).agg(
+        今日就诊人数=('身份证号', 'count'),
         本机构建档人数=('是否本机构建档', 'sum'),
         外机构建档人数=('是否外机构建档', 'sum'),
         本机构签约人数=('是否本机构签约', 'sum'),
@@ -66,12 +66,12 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
     )
 
     # 计算未建档人数和未签约人数
-    grouped['未建档人数'] = grouped['总就诊人数'] - grouped['本机构建档人数'] - grouped['外机构建档人数']
-    grouped['未签约人数'] = grouped['总就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数']
+    grouped['未建档人数'] = grouped['今日就诊人数'] - grouped['本机构建档人数'] - grouped['外机构建档人数']
+    grouped['未签约人数'] = grouped['今日就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数']
 
-    # 计算率（使用总就诊人数作为分母）
-    grouped['建档率'] = grouped['本机构建档人数'] / grouped['总就诊人数']
-    grouped['签约率'] = grouped['本机构签约人数'] / grouped['总就诊人数']
+    # 计算率（使用今日就诊人数作为分母）
+    grouped['建档率'] = grouped['本机构建档人数'] / grouped['今日就诊人数']
+    grouped['签约率'] = grouped['本机构签约人数'] / grouped['今日就诊人数']
 
     # 计算排名
     grouped['建档率排名'] = grouped['建档率'].rank(ascending=False, method='min').astype(int)
@@ -93,16 +93,16 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         new_file_df = df[new_file_mask].copy()
 
         # 计算每个医生的新建档人数
-        new_file_grouped = new_file_df.groupby('就诊医生', as_index=False).agg(
+        new_file_grouped = new_file_df.groupby('诊疗医生', as_index=False).agg(
             新建档人数=('是否本机构建档', 'sum')
         )
 
         # 合并到主统计表
-        grouped = pd.merge(grouped, new_file_grouped, on='就诊医生', how='left')
+        grouped = pd.merge(grouped, new_file_grouped, on='诊疗医生', how='left')
         grouped['新建档人数'] = grouped['新建档人数'].fillna(0).astype(int)
 
         # 计算新建档率
-        grouped['新建档率'] = grouped['新建档人数'] / grouped['总就诊人数']
+        grouped['新建档率'] = grouped['新建档人数'] / grouped['今日就诊人数']
 
         # 计算新建档率排名
         grouped['新建档率排名'] = grouped['新建档率'].rank(ascending=False, method='min').astype(int)
@@ -117,16 +117,16 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         new_sign_df = df[new_sign_mask].copy()
 
         # 计算每个医生的新签约人数
-        new_sign_grouped = new_sign_df.groupby('就诊医生', as_index=False).agg(
+        new_sign_grouped = new_sign_df.groupby('诊疗医生', as_index=False).agg(
             新签约人数=('是否本机构签约', 'sum')
         )
 
         # 合并到主统计表
-        grouped = pd.merge(grouped, new_sign_grouped, on='就诊医生', how='left')
+        grouped = pd.merge(grouped, new_sign_grouped, on='诊疗医生', how='left')
         grouped['新签约人数'] = grouped['新签约人数'].fillna(0).astype(int)
 
         # 计算新签约率
-        grouped['新签约率'] = grouped['新签约人数'] / grouped['总就诊人数']
+        grouped['新签约率'] = grouped['新签约人数'] / grouped['今日就诊人数']
 
         # 计算新签约率排名
         grouped['新签约率排名'] = grouped['新签约率'].rank(ascending=False, method='min').astype(int)
@@ -147,7 +147,7 @@ def generate_performance_charts(performance_df):
         # 创建分组条形图
         fig1 = px.bar(
             performance_df,
-            x='就诊医生',
+            x='诊疗医生',
             y=['本机构建档人数', '本机构签约人数'],
             title='医生建档与签约数量对比',
             labels={'value': '人数', 'variable': '类型'},
@@ -167,14 +167,14 @@ def generate_performance_charts(performance_df):
         charts.append(None)
 
     try:
-        # 2. 医生建档统计图（包含总就诊人数、本机构建档人数、外机构建档人数）
+        # 2. 医生建档统计图（包含今日就诊人数、本机构建档人数、外机构建档人数）
         performance_df = performance_df.sort_values('本机构建档人数', ascending=False)
 
         fig2 = px.bar(
             performance_df,
-            x='就诊医生',
-            y=['总就诊人数', '本机构建档人数', '外机构建档人数', '未建档人数'],
-            title='医生建档统计（含总就诊人数）',
+            x='诊疗医生',
+            y=['今日就诊人数', '本机构建档人数', '外机构建档人数', '未建档人数'],
+            title='医生建档统计（含今日就诊人数）',
             labels={'value': '人数', 'variable': '类型'},
             barmode='group',
             color_discrete_sequence=['#636EFA', '#00CC96', '#AB63FA', '#FFA15A']
@@ -192,14 +192,14 @@ def generate_performance_charts(performance_df):
         charts.append(None)
 
     try:
-        # 3. 医生签约统计图（包含总就诊人数、本机构签约人数、外机构签约人数）
+        # 3. 医生签约统计图（包含今日就诊人数、本机构签约人数、外机构签约人数）
         performance_df = performance_df.sort_values('本机构签约人数', ascending=False)
 
         fig3 = px.bar(
             performance_df,
-            x='就诊医生',
-            y=['总就诊人数', '本机构签约人数', '外机构签约人数', '未签约人数'],
-            title='医生签约统计（含总就诊人数）',
+            x='诊疗医生',
+            y=['今日就诊人数', '本机构签约人数', '外机构签约人数', '未签约人数'],
+            title='医生签约统计（含今日就诊人数）',
             labels={'value': '人数', 'variable': '类型'},
             barmode='group',
             color_discrete_sequence=['#636EFA', '#00CC96', '#AB63FA', '#FFA15A']
@@ -220,7 +220,7 @@ def generate_performance_charts(performance_df):
         # 4. 外机构统计图
         performance_df = performance_df.sort_values('外机构建档人数', ascending=False)
         fig4 = px.bar(performance_df,
-                      x='就诊医生',
+                      x='诊疗医生',
                       y=['外机构建档人数', '外机构签约人数'],
                       title='外机构建档与签约统计',
                       labels={'value': '人数', 'variable': '类型'},
@@ -239,16 +239,16 @@ def generate_performance_charts(performance_df):
         charts.append(None)
 
     try:
-        # 5. 新签约统计图（包含总就诊人数和新签约人数）
+        # 5. 新签约统计图（包含今日就诊人数和新签约人数）
         if '新签约人数' in performance_df.columns:
             # 按新签约人数降序排列
             performance_df = performance_df.sort_values('新签约人数', ascending=False)
 
             fig5 = px.bar(
                 performance_df,
-                x='就诊医生',
-                y=['总就诊人数', '新签约人数'],
-                title='医生新签约统计（含总就诊人数）',
+                x='诊疗医生',
+                y=['今日就诊人数', '新签约人数'],
+                title='医生新签约统计（含今日就诊人数）',
                 labels={'value': '人数', 'variable': '类型'},
                 barmode='group',
                 color_discrete_sequence=['#636EFA', '#EF553B']
@@ -257,7 +257,7 @@ def generate_performance_charts(performance_df):
             # 添加新签约率作为折线图（次坐标轴）
             fig5.add_trace(
                 go.Scatter(
-                    x=performance_df['就诊医生'],
+                    x=performance_df['诊疗医生'],
                     y=performance_df['新签约率'],
                     name='新签约率',
                     mode='lines+markers',
@@ -308,16 +308,16 @@ def generate_performance_charts(performance_df):
         charts.append(None)
 
     try:
-        # 6. 新建档统计图（包含总就诊人数和新建档人数）
+        # 6. 新建档统计图（包含今日就诊人数和新建档人数）
         if '新建档人数' in performance_df.columns:
             # 按新建档人数降序排列
             performance_df = performance_df.sort_values('新建档人数', ascending=False)
 
             fig6 = px.bar(
                 performance_df,
-                x='就诊医生',
-                y=['总就诊人数', '新建档人数'],
-                title='医生新建档统计（含总就诊人数）',
+                x='诊疗医生',
+                y=['今日就诊人数', '新建档人数'],
+                title='医生新建档统计（含今日就诊人数）',
                 labels={'value': '人数', 'variable': '类型'},
                 barmode='group',
                 color_discrete_sequence=['#636EFA', '#19D3F3']
@@ -326,7 +326,7 @@ def generate_performance_charts(performance_df):
             # 添加新建档率作为折线图（次坐标轴）
             fig6.add_trace(
                 go.Scatter(
-                    x=performance_df['就诊医生'],
+                    x=performance_df['诊疗医生'],
                     y=performance_df['新建档率'],
                     name='新建档率',
                     mode='lines+markers',
@@ -529,63 +529,53 @@ def main():
                     # 关键指标摘要
                     st.subheader("📌 关键指标摘要")
                     col1, col2, col3, col4 = st.columns(4)
-
                     # 计算总计
-                    total_visits = performance_df['总就诊人数'].sum()
+                    total_visits = performance_df['今日就诊人数'].sum()
                     total_local_files = performance_df['本机构建档人数'].sum()
                     total_local_signs = performance_df['本机构签约人数'].sum()
                     total_external_files = performance_df['外机构建档人数'].sum()
                     total_external_signs = performance_df['外机构签约人数'].sum()
-
                     # 新增：未建档和未签约人数
                     total_unfiled = performance_df['未建档人数'].sum()
                     total_unsigned = performance_df['未签约人数'].sum()
-
+                    # 添加今日就诊人数指标卡（第一行第一个）
                     col1.markdown(
+                        '<div class="metric-card"><div class="metric-title">今日就诊人数</div><div class="metric-value">{}</div></div>'.format(
+                            total_visits),
+                        unsafe_allow_html=True)
+                    col2.markdown(
                         '<div class="metric-card"><div class="metric-title">本机构建档率</div><div class="metric-value">{:.2%}</div></div>'.format(
                             total_local_files / total_visits),
                         unsafe_allow_html=True)
-
-                    col2.markdown(
+                    col3.markdown(
                         '<div class="metric-card"><div class="metric-title">本机构签约率</div><div class="metric-value">{:.2%}</div></div>'.format(
                             total_local_signs / total_visits),
                         unsafe_allow_html=True)
-
-                    col3.markdown(
+                    col4.markdown(
                         '<div class="metric-card"><div class="metric-title">外机构建档人数</div><div class="metric-value">{}</div></div>'.format(
                             total_external_files),
                         unsafe_allow_html=True)
-
-                    col4.markdown(
-                        '<div class="metric-card"><div class="metric-title">外机构签约人数</div><div class="metric-value">{}</div></div>'.format(
-                            total_external_signs),
-                        unsafe_allow_html=True)
-
                     # 第二行指标
                     col1, col2, col3, col4 = st.columns(4)
                     col1.markdown(
+                        '<div class="metric-card"><div class="metric-title">外机构签约人数</div><div class="metric-value">{}</div></div>'.format(
+                            total_external_signs),
+                        unsafe_allow_html=True)
+                    col2.markdown(
                         '<div class="metric-card"><div class="metric-title">可直接建档人数</div><div class="metric-value">{}</div></div>'.format(
                             total_unfiled),
                         unsafe_allow_html=True)
-
-                    col2.markdown(
+                    col3.markdown(
                         '<div class="metric-card"><div class="metric-title">可直接签约人数</div><div class="metric-value">{}</div></div>'.format(
                             total_unsigned),
                         unsafe_allow_html=True)
-
                     # 如果有新建档人数，显示相关指标
                     if '新建档人数' in performance_df.columns:
                         total_new_files = performance_df['新建档人数'].sum()
-                        col3.markdown(
+                        col4.markdown(
                             '<div class="metric-card"><div class="metric-title">当日新建档人数</div><div class="metric-value">{}</div></div>'.format(
                                 total_new_files),
                             unsafe_allow_html=True)
-
-                        col4.markdown(
-                            '<div class="metric-card"><div class="metric-title">当日新建档率</div><div class="metric-value">{:.2%}</div></div>'.format(
-                                total_new_files / total_visits),
-                            unsafe_allow_html=True)
-
                     # 第三行指标（如果有新签约人数）
                     if '新签约人数' in performance_df.columns:
                         total_new_signs = performance_df['新签约人数'].sum()
@@ -594,7 +584,6 @@ def main():
                             '<div class="metric-card"><div class="metric-title">当日新签约人数</div><div class="metric-value">{}</div></div>'.format(
                                 total_new_signs),
                             unsafe_allow_html=True)
-
                         col2.markdown(
                             '<div class="metric-card"><div class="metric-title">当日新签约率</div><div class="metric-value">{:.2%}</div></div>'.format(
                                 total_new_signs / total_visits),
@@ -614,14 +603,14 @@ def main():
                     st.subheader("📝 新建档名单")
                     st.write(
                         f"在 {start_date} 至 {end_date} 期间新建档的患者列表 (共{len(st.session_state.new_file_list)}人)：")
-                    st.dataframe(st.session_state.new_file_list[['就诊医生', '身份证号', '建档日期', '就诊日期']])
+                    st.dataframe(st.session_state.new_file_list[['诊疗医生', '身份证号', '建档日期', '就诊日期']])
 
                 # 显示新签约名单
                 if st.session_state.new_sign_list is not None and not st.session_state.new_sign_list.empty:
                     st.subheader("📝 新签约名单")
                     st.write(
                         f"在 {start_date} 至 {end_date} 期间新签约的患者列表 (共{len(st.session_state.new_sign_list)}人)：")
-                    st.dataframe(st.session_state.new_sign_list[['就诊医生', '身份证号', '签约日期']])
+                    st.dataframe(st.session_state.new_sign_list[['诊疗医生', '身份证号', '签约日期']])
 
                 # 数据导出
                 st.subheader("💾 数据导出")
