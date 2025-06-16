@@ -54,30 +54,46 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
 
     if missing_cols:
         st.error(f"数据中缺少必要列: {', '.join(missing_cols)}")
-        return pd.DataFrame(), None, None
+        return pd.DataFrame(), None, None, None
 
-    # 计算每个医生的统计指标 - 修复分组逻辑
+    # 创建新列：标记健康小屋-yey团队
+    if '团队名称' in df.columns:
+        df['健康小屋-yey'] = df['团队名称'].apply(lambda x: 1 if x == '健康小屋-yey' else 0)
+    else:
+        df['健康小屋-yey'] = 0
+
+    # 创建新列：非健康小屋的本机构签约
+    df['非健康小屋的本机构签约'] = df.apply(
+        lambda row: row['是否本机构签约'] if row['健康小屋-yey'] == 0 else 0,
+        axis=1
+    )
+
+    # 计算每个医生的统计指标
     grouped = df.groupby('诊疗医生', as_index=False).agg(
         今日就诊人数=('身份证号', 'count'),
         本机构建档人数=('是否本机构建档', 'sum'),
         外机构建档人数=('是否外机构建档', 'sum'),
-        本机构签约人数=('是否本机构签约', 'sum'),
-        外机构签约人数=('是否外机构签约', 'sum')
+        本机构签约人数=('非健康小屋的本机构签约', 'sum'),  # 使用排除健康小屋的签约
+        外机构签约人数=('是否外机构签约', 'sum'),
+        健康小屋签约人数=('健康小屋-yey', 'sum')
     )
 
     # 计算未建档人数和未签约人数
     grouped['未建档人数'] = grouped['今日就诊人数'] - grouped['本机构建档人数'] - grouped['外机构建档人数']
-    grouped['未签约人数'] = grouped['今日就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数']
 
+    # 修正未签约人数计算：既不在本机构签约，也不在外机构签约，也不在健康小屋签约
+    # grouped['未签约人数'] = grouped['今日就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数'] + grouped[
+    #     '健康小屋签约人数']
+    grouped['未签约人数'] = grouped['今日就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数']
     # 计算率（使用今日就诊人数作为分母）
     grouped['建档率'] = grouped['本机构建档人数'] / grouped['今日就诊人数']
-    grouped['签约率'] = grouped['本机构签约人数'] / grouped['今日就诊人数']
+    grouped['签约率'] = grouped['本机构签约人数'] / grouped['今日就诊人数']  # 排除健康小屋的签约率
 
     # 计算排名
     grouped['建档率排名'] = grouped['建档率'].rank(ascending=False, method='min').astype(int)
     grouped['签约率排名'] = grouped['签约率'].rank(ascending=False, method='min').astype(int)
 
-    # 新建档统计 - 修复逻辑：只统计建档日期等于就诊日期且本机构建档
+    # 新建档统计
     new_file_df = None
     if '建档日期' in df.columns and '就诊日期' in df.columns:
         # 创建临时列用于比较日期（忽略时间部分）
@@ -107,16 +123,25 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         # 计算新建档率排名
         grouped['新建档率排名'] = grouped['新建档率'].rank(ascending=False, method='min').astype(int)
 
-    # 新签约统计
+    # 新签约统计 - 排除健康小屋-yey团队
     new_sign_df = None
+    health_hut_sign_df = None
+
     if '签约日期' in df.columns:
         # 筛选在统计时间段内签约的记录，且必须是本机构签约
         new_sign_mask = (df['签约日期'] >= pd.Timestamp(start_date)) & \
                         (df['签约日期'] <= pd.Timestamp(end_date)) & \
                         (df['是否本机构签约'] == 1)
+
+        # 分离健康小屋-yey团队的签约数据
+        health_hut_mask = new_sign_mask & (df['团队名称'] == '健康小屋-yey')
+        health_hut_sign_df = df[health_hut_mask].copy()
+
+        # 排除健康小屋-yey团队的签约数据
+        new_sign_mask = new_sign_mask & (df['团队名称'] != '健康小屋-yey')
         new_sign_df = df[new_sign_mask].copy()
 
-        # 计算每个医生的新签约人数
+        # 计算每个医生的新签约人数（排除健康小屋）
         new_sign_grouped = new_sign_df.groupby('诊疗医生', as_index=False).agg(
             新签约人数=('是否本机构签约', 'sum')
         )
@@ -131,7 +156,34 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         # 计算新签约率排名
         grouped['新签约率排名'] = grouped['新签约率'].rank(ascending=False, method='min').astype(int)
 
-    return grouped, new_file_df, new_sign_df
+    # 调整列顺序：建档相关放一起，签约相关放一起
+    base_columns = ['诊疗医生', '今日就诊人数']
+    file_columns = ['本机构建档人数', '外机构建档人数', '未建档人数', '建档率', '建档率排名']
+    sign_columns = ['本机构签约人数', '外机构签约人数', '健康小屋签约人数', '未签约人数', '签约率', '签约率排名']
+
+    # 添加新建档相关列（如果存在）
+    if '新建档人数' in grouped.columns:
+        file_columns.extend(['新建档人数', '新建档率', '新建档率排名'])
+
+    # 添加新签约相关列（如果存在）
+    if '新签约人数' in grouped.columns:
+        sign_columns.extend(['新签约人数', '新签约率', '新签约率排名'])
+
+    # 重新组织列顺序
+    ordered_columns = base_columns + file_columns + sign_columns
+
+    # 确保只包含存在的列
+    final_columns = [col for col in ordered_columns if col in grouped.columns]
+
+    # 添加任何缺失的列（以防万一）
+    for col in grouped.columns:
+        if col not in final_columns:
+            final_columns.append(col)
+
+    grouped = grouped[final_columns]
+
+    return grouped, new_file_df, new_sign_df, health_hut_sign_df
+
 
 # 生成医生绩效图表 - 统一使用Plotly分组条形图
 def generate_performance_charts(performance_df):
@@ -195,14 +247,15 @@ def generate_performance_charts(performance_df):
         # 3. 医生签约统计图（包含今日就诊人数、本机构签约人数、外机构签约人数）
         performance_df = performance_df.sort_values('本机构签约人数', ascending=False)
 
+        # 创建签约统计图 - 包含健康小屋签约
         fig3 = px.bar(
             performance_df,
             x='诊疗医生',
-            y=['今日就诊人数', '本机构签约人数', '外机构签约人数', '未签约人数'],
+            y=['今日就诊人数', '本机构签约人数', '外机构签约人数', '健康小屋签约人数', '未签约人数'],
             title='医生签约统计（含今日就诊人数）',
             labels={'value': '人数', 'variable': '类型'},
             barmode='group',
-            color_discrete_sequence=['#636EFA', '#00CC96', '#AB63FA', '#FFA15A']
+            color_discrete_sequence=['#636EFA', '#00CC96', '#AB63FA', '#FFD700', '#FFA15A']
         )
 
         fig3.update_layout(
@@ -433,6 +486,51 @@ def main():
         border-radius: 10px;
         margin-bottom: 1.5rem;
     }
+    .health-hut-card {
+        background-color: #ffecb3;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 10px 0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .uncontracted-card {
+        background-color: #ffccbc;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 10px 0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .new-file-card {
+        background-color: #c8e6c9;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 10px 0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    /* 紫色卡片 */
+    .new-file-card.purple {
+        background-color: #e1bee7; /* 浅紫色 */
+        border-radius: 10px;
+        padding: 15px;
+        margin: 10px 0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    /* 粉色卡片 */
+    .new-file-card.pink {
+        background-color: #f8bbd0; /* 浅粉色 */
+        border-radius: 10px;
+        padding: 15px;
+        margin: 10px 0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    /* 红色卡片 */
+    .new-file-card.red {
+        background-color: #ffcdd2; /* Material Design 200级别红色 */
+        border-radius: 10px;
+        padding: 15px;
+        margin: 10px 0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -452,6 +550,8 @@ def main():
         st.session_state.new_sign_list = None
     if 'new_file_list' not in st.session_state:
         st.session_state.new_file_list = None
+    if 'health_hut_sign_list' not in st.session_state:
+        st.session_state.health_hut_sign_list = None
 
     if uploaded_file is not None:
         try:
@@ -490,11 +590,13 @@ def main():
             if st.button("计算绩效指标", key="calculate_perf"):
                 with st.spinner('正在计算绩效指标...'):
                     start_time = time.time()
-                    performance_df, new_file_list, new_sign_list = calculate_doctor_performance(df_processed,
-                                                                                                start_date, end_date)
+                    performance_df, new_file_list, new_sign_list, health_hut_sign_list = calculate_doctor_performance(
+                        df_processed,
+                        start_date, end_date)
                     st.session_state.performance_df = performance_df
                     st.session_state.new_file_list = new_file_list
                     st.session_state.new_sign_list = new_sign_list
+                    st.session_state.health_hut_sign_list = health_hut_sign_list
 
                     end_time = time.time()
                     st.success(f"计算完成! 耗时: {end_time - start_time:.2f}秒")
@@ -523,12 +625,14 @@ def main():
                         if '新签约率排名' not in formatted_df.columns:
                             formatted_df['新签约率排名'] = 'N/A'
 
-                    # 显示表格
+                    # 显示表格 - 确保包含健康小屋签约人数
                     st.dataframe(formatted_df)
 
                     # 关键指标摘要
                     st.subheader("📌 关键指标摘要")
+                    # 第一行：今日就诊人数 本机构建档率 本机构签约率 健康小屋签约人数
                     col1, col2, col3, col4 = st.columns(4)
+
                     # 计算总计
                     total_visits = performance_df['今日就诊人数'].sum()
                     total_local_files = performance_df['本机构建档人数'].sum()
@@ -536,58 +640,75 @@ def main():
                     total_external_files = performance_df['外机构建档人数'].sum()
                     total_external_signs = performance_df['外机构签约人数'].sum()
                     # 新增：未建档和未签约人数
-                    total_unfiled = performance_df['未建档人数'].sum()
+                    total_unfilled = performance_df['未建档人数'].sum()
                     total_unsigned = performance_df['未签约人数'].sum()
-                    # 添加今日就诊人数指标卡（第一行第一个）
+                    total_health_hut = performance_df['健康小屋签约人数'].sum()
+
+                    # 第一行使用浅紫色
                     col1.markdown(
-                        '<div class="metric-card"><div class="metric-title">今日就诊人数</div><div class="metric-value">{}</div></div>'.format(
+                        '<div class="new-file-card purple"><div class="metric-title">今日就诊人数</div><div class="metric-value">{}</div></div>'.format(
                             total_visits),
                         unsafe_allow_html=True)
                     col2.markdown(
-                        '<div class="metric-card"><div class="metric-title">本机构建档率</div><div class="metric-value">{:.2%}</div></div>'.format(
+                        '<div class="new-file-card purple"><div class="metric-title">本机构建档率</div><div class="metric-value">{:.2%}</div></div>'.format(
                             total_local_files / total_visits),
                         unsafe_allow_html=True)
                     col3.markdown(
-                        '<div class="metric-card"><div class="metric-title">本机构签约率</div><div class="metric-value">{:.2%}</div></div>'.format(
+                        '<div class="new-file-card purple"><div class="metric-title">本机构签约率</div><div class="metric-value">{:.2%}</div></div>'.format(
                             total_local_signs / total_visits),
                         unsafe_allow_html=True)
                     col4.markdown(
-                        '<div class="metric-card"><div class="metric-title">外机构建档人数</div><div class="metric-value">{}</div></div>'.format(
-                            total_external_files),
+                        '<div class="new-file-card purple"><div class="metric-title">健康小屋签约人数</div><div class="metric-value">{}</div></div>'.format(
+                            total_health_hut),
                         unsafe_allow_html=True)
-                    # 第二行指标
+
+                    # 第二行：可直接建档人数 可直接签约人数  外机构建档人数 外机构签约人数
                     col1, col2, col3, col4 = st.columns(4)
                     col1.markdown(
-                        '<div class="metric-card"><div class="metric-title">外机构签约人数</div><div class="metric-value">{}</div></div>'.format(
-                            total_external_signs),
+                        f'<div class="uncontracted-card"><div class="metric-title">可直接建档人数</div><div class="metric-value">{total_unfilled}</div></div>',
                         unsafe_allow_html=True)
                     col2.markdown(
-                        '<div class="metric-card"><div class="metric-title">可直接建档人数</div><div class="metric-value">{}</div></div>'.format(
-                            total_unfiled),
+                        f'<div class="uncontracted-card"><div class="metric-title">可直接签约人数</div><div class="metric-value">{total_unsigned}</div></div>',
                         unsafe_allow_html=True)
                     col3.markdown(
-                        '<div class="metric-card"><div class="metric-title">可直接签约人数</div><div class="metric-value">{}</div></div>'.format(
-                            total_unsigned),
+                        '<div class="uncontracted-card"><div class="metric-title">外机构建档人数</div><div class="metric-value">{}</div></div>'.format(
+                            total_external_files),
                         unsafe_allow_html=True)
-                    # 如果有新建档人数，显示相关指标
+                    col4.markdown(
+                        '<div class="uncontracted-card"><div class="metric-title">外机构签约人数</div><div class="metric-value">{}</div></div>'.format(
+                            total_external_signs),
+                        unsafe_allow_html=True)
+                    # 第三行：当日新建档人数 当日新建档案率 当日新签约人数  当日新签约率
+                    col1, col2, col3, col4 = st.columns(4)
                     if '新建档人数' in performance_df.columns:
                         total_new_files = performance_df['新建档人数'].sum()
-                        col4.markdown(
-                            '<div class="metric-card"><div class="metric-title">当日新建档人数</div><div class="metric-value">{}</div></div>'.format(
-                                total_new_files),
-                            unsafe_allow_html=True)
-                    # 第三行指标（如果有新签约人数）
-                    if '新签约人数' in performance_df.columns:
-                        total_new_signs = performance_df['新签约人数'].sum()
-                        col1, col2, col3, col4 = st.columns(4)
                         col1.markdown(
-                            '<div class="metric-card"><div class="metric-title">当日新签约人数</div><div class="metric-value">{}</div></div>'.format(
-                                total_new_signs),
+                            f'<div class="new-file-card"><div class="metric-title">当日新建档人数</div><div class="metric-value">{total_new_files}</div></div>',
                             unsafe_allow_html=True)
                         col2.markdown(
-                            '<div class="metric-card"><div class="metric-title">当日新签约率</div><div class="metric-value">{:.2%}</div></div>'.format(
-                                total_new_signs / total_visits),
+                            f'<div class="new-file-card"><div class="metric-title">当日新建档率</div><div class="metric-value">{total_new_files / total_visits:.2%}</div></div>',
                             unsafe_allow_html=True)
+                    if '新签约人数' in performance_df.columns:
+                        total_new_signs = performance_df['新签约人数'].sum()
+                        col3.markdown(
+                            f'<div class="new-file-card"><div class="metric-title">当日新签约人数</div><div class="metric-value">{total_new_signs}</div></div>',
+                            unsafe_allow_html=True)
+                        col4.markdown(
+                            f'<div class="new-file-card"><div class="metric-title">当日新签约率</div><div class="metric-value">{total_new_signs / total_visits:.2%}</div></div>',
+                            unsafe_allow_html=True)
+                    # 第四行：如果有健康小屋-yey团队签约名单 就在第四行加一个 当日健康小屋签约人数
+                    if st.session_state.health_hut_sign_list is not None and not st.session_state.health_hut_sign_list.empty:
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.markdown(
+                            f'<div class="health-hut-card"><div class="metric-title">当日健康小屋签约人数</div><div class="metric-value">{len(st.session_state.health_hut_sign_list)}</div></div>',
+                            unsafe_allow_html=True)
+
+                # 健康小屋-yey团队签约名单展示
+                if st.session_state.health_hut_sign_list is not None and not st.session_state.health_hut_sign_list.empty:
+                    st.subheader("🏠 健康小屋-yey团队签约名单")
+                    st.write(
+                        f"在 {start_date} 至 {end_date} 期间健康小屋-yey团队签约的患者列表 (共{len(st.session_state.health_hut_sign_list)}人)：")
+                    st.dataframe(st.session_state.health_hut_sign_list[['诊疗医生', '身份证号', '签约日期']])
 
                 # 生成图表
                 st.subheader("📈 绩效可视化")
@@ -631,6 +752,11 @@ def main():
                         # 如果有新签约名单，也导出
                         if st.session_state.new_sign_list is not None:
                             st.session_state.new_sign_list.to_excel(writer, sheet_name='新签约名单', index=False)
+
+                        # 如果有健康小屋签约名单，也导出
+                        if st.session_state.health_hut_sign_list is not None:
+                            st.session_state.health_hut_sign_list.to_excel(writer, sheet_name='健康小屋签约名单',
+                                                                           index=False)
                 except Exception as e:
                     st.error(f"导出Excel时出错: {e}")
                 output.seek(0)
