@@ -87,27 +87,27 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         今日就诊人数=('身份证号', 'count'),
         本机构建档人数=('是否本机构建档', 'sum'),
         外机构建档人数=('是否外机构建档', 'sum'),
-        未建档人数=('未建档', 'sum'),  # 直接使用标记列
+        剩余未建档人数=('未建档', 'sum'),  # 直接使用标记列
         本机构签约人数=('非健康小屋的本机构签约', 'sum'),  # 使用排除健康小屋的签约
         外机构签约人数=('是否外机构签约', 'sum'),
         健康小屋签约人数=('健康小屋-yey', 'sum'),
-        未签约人数=('未签约', 'sum'),  # 直接使用标记列
+        剩余未签约人数=('未签约', 'sum'),  # 直接使用标记列
     )
 
-    # 计算未建档人数和未签约人数
-    # grouped['未建档人数'] = grouped['今日就诊人数'] - grouped['本机构建档人数'] - grouped['外机构建档人数']
+    # 计算剩余未建档人数和剩余未签约人数
+    # grouped['剩余未建档人数'] = grouped['今日就诊人数'] - grouped['本机构建档人数'] - grouped['外机构建档人数']
 
-    # 修正未签约人数计算：既不在本机构签约，也不在外机构签约，也不在健康小屋签约
-    # grouped['未签约人数'] = grouped['今日就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数'] + grouped[
+    # 修正剩余未签约人数计算：既不在本机构签约，也不在外机构签约，也不在健康小屋签约
+    # grouped['剩余未签约人数'] = grouped['今日就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数'] + grouped[
     #     '健康小屋签约人数']
-    # grouped['未签约人数'] = grouped['今日就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数']
+    # grouped['剩余未签约人数'] = grouped['今日就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数']
     # 计算率（使用今日就诊人数作为分母）
     grouped['建档率'] = grouped['本机构建档人数'] / grouped['今日就诊人数']
     grouped['签约率'] = grouped['本机构签约人数'] / grouped['今日就诊人数']  # 排除健康小屋的签约率
 
     # 计算排名
-    grouped['建档率排名'] = grouped['建档率'].rank(ascending=False, method='min').astype(int)
-    grouped['签约率排名'] = grouped['签约率'].rank(ascending=False, method='min').astype(int)
+    grouped['建档率排名'] = grouped['建档率'].rank(ascending=False, method='dense').astype(int)
+    grouped['签约率排名'] = grouped['签约率'].rank(ascending=False, method='dense').astype(int)
 
     # 新建档统计
     new_file_df = None
@@ -136,14 +136,14 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         # # 计算新建档率
         # grouped['新建档率'] = grouped['新建档人数'] / grouped['今日就诊人数']
 
-        # 计算新建档率 = 新建档人数 / 就诊时未建档人数
+        # 计算新建档率 = 新建档人数 / 就诊时剩余未建档人数
         grouped['新建档率'] = grouped.apply(
-            lambda row: row['新建档人数'] / (row['未建档人数'] + row['新建档人数']) if row['未建档人数'] > 0 else 0,
+            lambda row: row['新建档人数'] / (row['剩余未建档人数'] + row['新建档人数']) if row['剩余未建档人数'] > 0 else 0,
             axis=1
         )
 
         # 计算新建档率排名
-        grouped['新建档率排名'] = grouped['新建档率'].rank(ascending=False, method='min').astype(int)
+        grouped['新建档率排名'] = grouped['新建档率'].rank(ascending=False, method='dense').astype(int)
 
     # 新签约统计 - 排除健康小屋-yey团队
     new_sign_df = None
@@ -175,19 +175,22 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         # # 计算新签约率
         # grouped['新签约率'] = grouped['新签约人数'] / grouped['今日就诊人数']
 
-        # 计算新签约率 = 新签约人数 / 就诊时未签约人数
+        # 计算新签约率 = 新签约人数 / 就诊时剩余未签约人数
         grouped['新签约率'] = grouped.apply(
-            lambda row: row['新签约人数'] / (row['未签约人数'] + row['新签约人数']) if row['未签约人数'] > 0 else 0,
+            lambda row: row['新签约人数'] / (row['剩余未签约人数'] + row['新签约人数']) if row['剩余未签约人数'] > 0 else 0,
             axis=1
         )
 
         # 计算新签约率排名
-        grouped['新签约率排名'] = grouped['新签约率'].rank(ascending=False, method='min').astype(int)
+        grouped['新签约率排名'] = grouped['新签约率'].rank(ascending=False, method='dense').astype(int)
+
+        # 计算新签约人数排名
+        grouped['新签约人数排名'] = grouped['新签约人数'].rank(ascending=False, method='dense').astype(int)
 
     # 调整列顺序：建档相关放一起，签约相关放一起
     base_columns = ['诊疗医生', '今日就诊人数']
-    file_columns = ['本机构建档人数', '外机构建档人数', '未建档人数', '建档率', '建档率排名']
-    sign_columns = ['本机构签约人数', '外机构签约人数', '健康小屋签约人数', '未签约人数', '签约率', '签约率排名']
+    file_columns = ['本机构建档人数', '外机构建档人数', '剩余未建档人数', '建档率', '建档率排名']
+    sign_columns = ['本机构签约人数', '外机构签约人数', '健康小屋签约人数', '剩余未签约人数', '签约率', '签约率排名']
 
     # 添加新建档相关列（如果存在）
     if '新建档人数' in grouped.columns:
@@ -195,7 +198,7 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
 
     # 添加新签约相关列（如果存在）
     if '新签约人数' in grouped.columns:
-        sign_columns.extend(['新签约人数', '新签约率', '新签约率排名'])
+        sign_columns.extend(['新签约人数', '新签约人数排名', '新签约率', '新签约率排名'])
 
     # 重新组织列顺序
     ordered_columns = base_columns + file_columns + sign_columns
@@ -253,7 +256,7 @@ def generate_performance_charts(performance_df):
         fig2 = px.bar(
             performance_df,
             x='诊疗医生',
-            y=['今日就诊人数', '本机构建档人数', '外机构建档人数', '未建档人数'],
+            y=['今日就诊人数', '本机构建档人数', '外机构建档人数', '剩余未建档人数'],
             title='医生建档统计（含今日就诊人数）',
             labels={'value': '人数', 'variable': '类型'},
             barmode='group',
@@ -279,7 +282,7 @@ def generate_performance_charts(performance_df):
         fig3 = px.bar(
             performance_df,
             x='诊疗医生',
-            y=['今日就诊人数', '本机构签约人数', '外机构签约人数', '健康小屋签约人数', '未签约人数'],
+            y=['今日就诊人数', '本机构签约人数', '外机构签约人数', '健康小屋签约人数', '剩余未签约人数'],
             title='医生签约统计（含今日就诊人数）',
             labels={'value': '人数', 'variable': '类型'},
             barmode='group',
@@ -667,9 +670,9 @@ def main():
                     total_local_signs = performance_df['本机构签约人数'].sum()
                     total_external_files = performance_df['外机构建档人数'].sum()
                     total_external_signs = performance_df['外机构签约人数'].sum()
-                    # 新增：未建档和未签约人数
-                    total_unfilled = performance_df['未建档人数'].sum()
-                    total_unsigned = performance_df['未签约人数'].sum()
+                    # 新增：未建档和剩余未签约人数
+                    total_unfilled = performance_df['剩余未建档人数'].sum()
+                    total_unsigned = performance_df['剩余未签约人数'].sum()
                     total_health_hut = performance_df['健康小屋签约人数'].sum()
 
                     # 第一行使用浅紫色
@@ -693,10 +696,10 @@ def main():
                     # 第二行：可直接建档人数 可直接签约人数  外机构建档人数 外机构签约人数
                     col1, col2, col3, col4 = st.columns(4)
                     col1.markdown(
-                        f'<div class="uncontracted-card"><div class="metric-title">可直接建档人数</div><div class="metric-value">{total_unfilled}</div></div>',
+                        f'<div class="uncontracted-card"><div class="metric-title">剩余可直接建档人数</div><div class="metric-value">{total_unfilled}</div></div>',
                         unsafe_allow_html=True)
                     col2.markdown(
-                        f'<div class="uncontracted-card"><div class="metric-title">可直接签约人数</div><div class="metric-value">{total_unsigned}</div></div>',
+                        f'<div class="uncontracted-card"><div class="metric-title">剩余可直接签约人数</div><div class="metric-value">{total_unsigned}</div></div>',
                         unsafe_allow_html=True)
                     col3.markdown(
                         '<div class="uncontracted-card"><div class="metric-title">外机构建档人数</div><div class="metric-value">{}</div></div>'.format(
