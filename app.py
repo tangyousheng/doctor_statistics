@@ -68,23 +68,39 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         axis=1
     )
 
+    # df['未建档'] = ((df['是否本机构建档'] == 0) & (df['是否外机构建档'] == 0)).astype(int)
+    #
+    # # 正确计算未签约：既不是本机构签约（含健康小屋），也不是外机构签约
+    # df['未签约'] = ((df['非健康小屋的本机构签约'] == 0) &
+    #                 (df['健康小屋-yey'] == 0) &
+    #                 (df['是否外机构签约'] == 0)).astype(int)
+
+    # 修改未建档和未签约的定义
+    # 未建档 = 非本机构建档（包括外机构建档和未建档）
+    df['未建档'] = (df['是否本机构建档'] == 0).astype(int)
+
+    # 未签约 = 非本机构签约（包括外机构签约、健康小屋签约和未签约）
+    df['未签约'] = (df['非健康小屋的本机构签约'] == 0).astype(int)
+
     # 计算每个医生的统计指标
     grouped = df.groupby('诊疗医生', as_index=False).agg(
         今日就诊人数=('身份证号', 'count'),
         本机构建档人数=('是否本机构建档', 'sum'),
         外机构建档人数=('是否外机构建档', 'sum'),
+        未建档人数=('未建档', 'sum'),  # 直接使用标记列
         本机构签约人数=('非健康小屋的本机构签约', 'sum'),  # 使用排除健康小屋的签约
         外机构签约人数=('是否外机构签约', 'sum'),
-        健康小屋签约人数=('健康小屋-yey', 'sum')
+        健康小屋签约人数=('健康小屋-yey', 'sum'),
+        未签约人数=('未签约', 'sum'),  # 直接使用标记列
     )
 
     # 计算未建档人数和未签约人数
-    grouped['未建档人数'] = grouped['今日就诊人数'] - grouped['本机构建档人数'] - grouped['外机构建档人数']
+    # grouped['未建档人数'] = grouped['今日就诊人数'] - grouped['本机构建档人数'] - grouped['外机构建档人数']
 
     # 修正未签约人数计算：既不在本机构签约，也不在外机构签约，也不在健康小屋签约
     # grouped['未签约人数'] = grouped['今日就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数'] + grouped[
     #     '健康小屋签约人数']
-    grouped['未签约人数'] = grouped['今日就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数']
+    # grouped['未签约人数'] = grouped['今日就诊人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数']
     # 计算率（使用今日就诊人数作为分母）
     grouped['建档率'] = grouped['本机构建档人数'] / grouped['今日就诊人数']
     grouped['签约率'] = grouped['本机构签约人数'] / grouped['今日就诊人数']  # 排除健康小屋的签约率
@@ -117,8 +133,14 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         grouped = pd.merge(grouped, new_file_grouped, on='诊疗医生', how='left')
         grouped['新建档人数'] = grouped['新建档人数'].fillna(0).astype(int)
 
-        # 计算新建档率
-        grouped['新建档率'] = grouped['新建档人数'] / grouped['今日就诊人数']
+        # # 计算新建档率
+        # grouped['新建档率'] = grouped['新建档人数'] / grouped['今日就诊人数']
+
+        # 计算新建档率 = 新建档人数 / 就诊时未建档人数
+        grouped['新建档率'] = grouped.apply(
+            lambda row: row['新建档人数'] / (row['未建档人数'] + row['新建档人数']) if row['未建档人数'] > 0 else 0,
+            axis=1
+        )
 
         # 计算新建档率排名
         grouped['新建档率排名'] = grouped['新建档率'].rank(ascending=False, method='min').astype(int)
@@ -150,8 +172,14 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         grouped = pd.merge(grouped, new_sign_grouped, on='诊疗医生', how='left')
         grouped['新签约人数'] = grouped['新签约人数'].fillna(0).astype(int)
 
-        # 计算新签约率
-        grouped['新签约率'] = grouped['新签约人数'] / grouped['今日就诊人数']
+        # # 计算新签约率
+        # grouped['新签约率'] = grouped['新签约人数'] / grouped['今日就诊人数']
+
+        # 计算新签约率 = 新签约人数 / 就诊时未签约人数
+        grouped['新签约率'] = grouped.apply(
+            lambda row: row['新签约人数'] / (row['未签约人数'] + row['新签约人数']) if row['未签约人数'] > 0 else 0,
+            axis=1
+        )
 
         # 计算新签约率排名
         grouped['新签约率排名'] = grouped['新签约率'].rank(ascending=False, method='min').astype(int)
@@ -686,7 +714,8 @@ def main():
                             f'<div class="new-file-card"><div class="metric-title">当日新建档人数</div><div class="metric-value">{total_new_files}</div></div>',
                             unsafe_allow_html=True)
                         col2.markdown(
-                            f'<div class="new-file-card"><div class="metric-title">当日新建档率</div><div class="metric-value">{total_new_files / total_visits:.2%}</div></div>',
+                            f'<div class="new-file-card"><div class="metric-title">当日新建档率</div><div class="metric-value">'
+                            f'{total_new_files / (total_unfilled + total_new_files):.2%}</div></div>',
                             unsafe_allow_html=True)
                     if '新签约人数' in performance_df.columns:
                         total_new_signs = performance_df['新签约人数'].sum()
@@ -694,7 +723,8 @@ def main():
                             f'<div class="new-file-card"><div class="metric-title">当日新签约人数</div><div class="metric-value">{total_new_signs}</div></div>',
                             unsafe_allow_html=True)
                         col4.markdown(
-                            f'<div class="new-file-card"><div class="metric-title">当日新签约率</div><div class="metric-value">{total_new_signs / total_visits:.2%}</div></div>',
+                            f'<div class="new-file-card"><div class="metric-title">当日新签约率</div><div class="metric-value">'
+                            f'{total_new_signs / (total_unsigned + total_new_signs):.2%}</div></div>',
                             unsafe_allow_html=True)
                     # 第四行：如果有健康小屋-yey团队签约名单 就在第四行加一个 当日健康小屋签约人数
                     if st.session_state.health_hut_sign_list is not None and not st.session_state.health_hut_sign_list.empty:
