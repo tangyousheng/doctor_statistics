@@ -27,7 +27,7 @@ def preprocess_data(df):
         st.warning("数据中缺少 '就诊日期' 列，无法进行时间分析")
         return df
     # 其他日期列允许为空
-    for col in ['签约日期', '建档日期']:
+    for col in ['签约日期', '建档日期', '首次签约日期']:  # 新增首次签约日期
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors='coerce')
 
@@ -68,13 +68,6 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         axis=1
     )
 
-    # df['未建档'] = ((df['是否本机构建档'] == 0) & (df['是否外机构建档'] == 0)).astype(int)
-    #
-    # # 正确计算未签约：既不是本机构签约（含健康小屋），也不是外机构签约
-    # df['未签约'] = ((df['非健康小屋的本机构签约'] == 0) &
-    #                 (df['健康小屋-yey'] == 0) &
-    #                 (df['是否外机构签约'] == 0)).astype(int)
-
     # 修改未建档和未签约的定义
     # 未建档 = 非本机构建档（包括外机构建档和未建档）
     df['未建档'] = (df['是否本机构建档'] == 0).astype(int)
@@ -94,13 +87,6 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         剩余未签约人数=('未签约', 'sum'),  # 直接使用标记列
     )
 
-    # 计算剩余未建档人数和剩余未签约人数
-    # grouped['剩余未建档人数'] = grouped['今日诊疗人数'] - grouped['本机构建档人数'] - grouped['外机构建档人数']
-
-    # 修正剩余未签约人数计算：既不在本机构签约，也不在外机构签约，也不在健康小屋签约
-    # grouped['剩余未签约人数'] = grouped['今日诊疗人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数'] + grouped[
-    #     '健康小屋签约人数']
-    # grouped['剩余未签约人数'] = grouped['今日诊疗人数'] - grouped['本机构签约人数'] - grouped['外机构签约人数']
     # 计算率（使用今日诊疗人数作为分母）
     grouped['建档率'] = grouped['本机构建档人数'] / grouped['今日诊疗人数']
     grouped['签约率'] = grouped['本机构签约人数'] / grouped['今日诊疗人数']  # 排除健康小屋的签约率
@@ -133,12 +119,10 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         grouped = pd.merge(grouped, new_file_grouped, on='诊疗医生', how='left')
         grouped['新建档人数'] = grouped['新建档人数'].fillna(0).astype(int)
 
-        # # 计算新建档率
-        # grouped['新建档率'] = grouped['新建档人数'] / grouped['今日诊疗人数']
-
         # 计算新建档率 = 新建档人数 / 就诊时剩余未建档人数
         grouped['新建档率'] = grouped.apply(
-            lambda row: row['新建档人数'] / (row['剩余未建档人数'] + row['新建档人数']) if row['剩余未建档人数'] > 0 else 0,
+            lambda row: row['新建档人数'] / (row['剩余未建档人数'] + row['新建档人数']) if row[
+                                                                                               '剩余未建档人数'] > 0 else 0,
             axis=1
         )
 
@@ -157,6 +141,38 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
                         (df['是否本机构签约'] == 1) & \
                         (df['签约日期'].dt.date == df['就诊日期'].dt.date)  # 关键修改：签约=就诊日
 
+        # 特殊团队列表
+        # special_teams = ['第一家医团队', '第十三家医团队', '第五家医团队']
+        special_teams = ['第一家医团队', '第二家医团队', '第十三家医团队']
+
+        # 如果有首次签约日期列，并且有团队名称列
+        if '首次签约日期' in df.columns and '团队名称' in df.columns:
+            # 确保首次签约日期是日期类型
+            if not pd.api.types.is_datetime64_any_dtype(df['首次签约日期']):
+                df['首次签约日期'] = pd.to_datetime(df['首次签约日期'], errors='coerce')
+
+            # 对于特殊团队，添加首次签约日期等于签约日期的条件
+            special_team_mask = df['团队名称'].isin(special_teams)
+
+            # 特殊团队的条件：首次签约日期等于签约日期
+            special_team_condition = (df['首次签约日期'].dt.date == df['签约日期'].dt.date)
+
+            # 非特殊团队不需要首次签约日期条件
+            non_special_team_condition = ~df['团队名称'].isin(special_teams)
+
+            # 组合条件：特殊团队需要满足首次签约条件，非特殊团队不需要
+            first_sign_condition = (special_team_mask & special_team_condition) | non_special_team_condition
+
+            # 将条件加入mask
+            new_sign_mask = new_sign_mask & first_sign_condition
+
+            st.success(f"已对特殊团队({', '.join(special_teams)})应用首次签约日期条件")
+        else:
+            if '首次签约日期' not in df.columns:
+                st.warning("数据中缺少 '首次签约日期' 列，所有团队仅使用签约日期进行统计")
+            if '团队名称' not in df.columns:
+                st.warning("数据中缺少 '团队名称' 列，无法识别特殊团队")
+
         # 分离健康小屋-yey团队的签约数据
         health_hut_mask = new_sign_mask & (df['团队名称'] == '健康小屋-yey')
         health_hut_sign_df = df[health_hut_mask].copy()
@@ -174,12 +190,10 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         grouped = pd.merge(grouped, new_sign_grouped, on='诊疗医生', how='left')
         grouped['新签约人数'] = grouped['新签约人数'].fillna(0).astype(int)
 
-        # # 计算新签约率
-        # grouped['新签约率'] = grouped['新签约人数'] / grouped['今日诊疗人数']
-
         # 计算新签约率 = 新签约人数 / 就诊时剩余未签约人数
         grouped['新签约率'] = grouped.apply(
-            lambda row: row['新签约人数'] / (row['剩余未签约人数'] + row['新签约人数']) if row['剩余未签约人数'] > 0 else 0,
+            lambda row: row['新签约人数'] / (row['剩余未签约人数'] + row['新签约人数']) if row[
+                                                                                               '剩余未签约人数'] > 0 else 0,
             axis=1
         )
 
@@ -665,7 +679,6 @@ def main():
                     st.subheader("📌 关键指标摘要")
                     # 第一行：今日诊疗人数 本机构建档率 本机构签约率 健康小屋签约人数
                     col1, col2, col3, col4 = st.columns(4)
-
                     # 计算总计
                     total_visits = performance_df['今日诊疗人数'].sum()
                     total_local_files = performance_df['本机构建档人数'].sum()
@@ -676,7 +689,6 @@ def main():
                     total_unfilled = performance_df['剩余未建档人数'].sum()
                     total_unsigned = performance_df['剩余未签约人数'].sum()
                     total_health_hut = performance_df['健康小屋签约人数'].sum()
-
                     # 第一行使用浅紫色
                     col1.markdown(
                         '<div class="new-file-card purple"><div class="metric-title">今日诊疗人数</div><div class="metric-value">{}</div></div>'.format(
@@ -694,7 +706,6 @@ def main():
                         '<div class="new-file-card purple"><div class="metric-title">健康小屋签约人数</div><div class="metric-value">{}</div></div>'.format(
                             total_health_hut),
                         unsafe_allow_html=True)
-
                     # 第二行：可直接建档人数 可直接签约人数  外机构建档人数 外机构签约人数
                     col1, col2, col3, col4 = st.columns(4)
                     col1.markdown(
@@ -711,31 +722,61 @@ def main():
                         '<div class="uncontracted-card"><div class="metric-title">外机构签约人数</div><div class="metric-value">{}</div></div>'.format(
                             total_external_signs),
                         unsafe_allow_html=True)
+
                     # 第三行：当日新建档人数 当日新建档案率 当日新签约人数  当日新签约率
                     col1, col2, col3, col4 = st.columns(4)
+
+                    # 计算新建档人数（根据身份证号去重）
                     if '新建档人数' in performance_df.columns:
-                        total_new_files = performance_df['新建档人数'].sum()
+                        # 使用原始数据计算（不去重）
+                        total_new_files_unrepeated = performance_df['新建档人数'].sum()
+
+                        # 使用名单计算（根据身份证号去重）
+                        if st.session_state.new_file_list is not None:
+                            # 计算去重后的新建档人数
+                            total_new_files = st.session_state.new_file_list['身份证号'].nunique()
+                        else:
+                            total_new_files = total_new_files_unrepeated
+
                         col1.markdown(
                             f'<div class="new-file-card"><div class="metric-title">当日新建档人数</div><div class="metric-value">{total_new_files}</div></div>',
                             unsafe_allow_html=True)
+
+                        # 计算新建档率（使用不去重的数据）
                         col2.markdown(
                             f'<div class="new-file-card"><div class="metric-title">当日新建档率</div><div class="metric-value">'
-                            f'{total_new_files / (total_unfilled + total_new_files):.2%}</div></div>',
+                            f'{total_new_files_unrepeated / (total_unfilled + total_new_files_unrepeated):.2%}</div></div>',
                             unsafe_allow_html=True)
+
+                    # 计算新签约人数（根据身份证号去重）
                     if '新签约人数' in performance_df.columns:
-                        total_new_signs = performance_df['新签约人数'].sum()
+                        # 使用原始数据计算（不去重）
+                        total_new_signs_unrepeated = performance_df['新签约人数'].sum()
+
+                        # 使用名单计算（根据身份证号去重）
+                        if st.session_state.new_sign_list is not None:
+                            # 计算去重后的新签约人数
+                            total_new_signs = st.session_state.new_sign_list['身份证号'].nunique()
+                        else:
+                            total_new_signs = total_new_signs_unrepeated
+
                         col3.markdown(
                             f'<div class="new-file-card"><div class="metric-title">当日新签约人数</div><div class="metric-value">{total_new_signs}</div></div>',
                             unsafe_allow_html=True)
+
+                        # 计算新签约率（使用不去重的数据）
                         col4.markdown(
                             f'<div class="new-file-card"><div class="metric-title">当日新签约率</div><div class="metric-value">'
-                            f'{total_new_signs / (total_unsigned + total_new_signs):.2%}</div></div>',
+                            f'{total_new_signs_unrepeated / (total_unsigned + total_new_signs_unrepeated):.2%}</div></div>',
                             unsafe_allow_html=True)
+
                     # 第四行：如果有健康小屋-yey团队签约名单 就在第四行加一个 当日健康小屋签约人数
                     if st.session_state.health_hut_sign_list is not None and not st.session_state.health_hut_sign_list.empty:
                         col1, col2, col3, col4 = st.columns(4)
+                        # 健康小屋签约人数也根据身份证号去重
+                        health_hut_count = st.session_state.health_hut_sign_list['身份证号'].nunique()
                         col1.markdown(
-                            f'<div class="health-hut-card"><div class="metric-title">当日健康小屋签约人数</div><div class="metric-value">{len(st.session_state.health_hut_sign_list)}</div></div>',
+                            f'<div class="health-hut-card"><div class="metric-title">当日健康小屋签约人数</div><div class="metric-value">{health_hut_count}</div></div>',
                             unsafe_allow_html=True)
 
                 # 健康小屋-yey团队签约名单展示
