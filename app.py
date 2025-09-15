@@ -15,6 +15,12 @@ plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
 sns.set_style('whitegrid')
 sns.set_palette('pastel')
 
+# 定义新的团队列表
+SPECIAL_TEAMS = [
+    '第十四家医团队①', '第十四家医团队②', '第十四家医团队③',
+    '第十四家医团队④', '第十四家医团队⑤', '第十四家医团队⑥', '健康小屋-yey'
+]
+
 
 # 数据处理函数 - 修复日期处理逻辑
 def preprocess_data(df):
@@ -56,15 +62,15 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         st.error(f"数据中缺少必要列: {', '.join(missing_cols)}")
         return pd.DataFrame(), None, None, None
 
-    # 创建新列：标记健康小屋-yey团队
+    # 创建新列：标记特殊团队
     if '团队名称' in df.columns:
-        df['健康小屋-yey'] = df['团队名称'].apply(lambda x: 1 if x == '健康小屋-yey' else 0)
+        df['特殊团队'] = df['团队名称'].apply(lambda x: 1 if x in SPECIAL_TEAMS else 0)
     else:
-        df['健康小屋-yey'] = 0
+        df['特殊团队'] = 0
 
-    # 创建新列：非健康小屋的本机构签约
-    df['非健康小屋的本机构签约'] = df.apply(
-        lambda row: row['是否本机构签约'] if row['健康小屋-yey'] == 0 else 0,
+    # 创建新列：非特殊团队的本机构签约
+    df['非特殊团队的本机构签约'] = df.apply(
+        lambda row: row['是否本机构签约'] if row['特殊团队'] == 0 else 0,
         axis=1
     )
 
@@ -72,8 +78,8 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
     # 未建档 = 非本机构建档（包括外机构建档和未建档）
     df['未建档'] = (df['是否本机构建档'] == 0).astype(int)
 
-    # 未签约 = 非本机构签约（包括外机构签约、健康小屋签约和未签约）
-    df['未签约'] = (df['非健康小屋的本机构签约'] == 0).astype(int)
+    # 未签约 = 非本机构签约（包括外机构签约、特殊团队签约和未签约）
+    df['未签约'] = (df['非特殊团队的本机构签约'] == 0).astype(int)
 
     # 计算每个医生的统计指标
     grouped = df.groupby('诊疗医生', as_index=False).agg(
@@ -81,15 +87,15 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         本机构建档人数=('是否本机构建档', 'sum'),
         外机构建档人数=('是否外机构建档', 'sum'),
         剩余未建档人数=('未建档', 'sum'),  # 直接使用标记列
-        本机构签约人数=('非健康小屋的本机构签约', 'sum'),  # 使用排除健康小屋的签约
+        本机构签约人数=('非特殊团队的本机构签约', 'sum'),  # 使用排除特殊团队的签约
         外机构签约人数=('是否外机构签约', 'sum'),
-        健康小屋签约人数=('健康小屋-yey', 'sum'),
+        特殊团队签约人数=('特殊团队', 'sum'),
         剩余未签约人数=('未签约', 'sum'),  # 直接使用标记列
     )
 
     # 计算率（使用今日诊疗人数作为分母）
     grouped['建档率'] = grouped['本机构建档人数'] / grouped['今日诊疗人数']
-    grouped['签约率'] = grouped['本机构签约人数'] / grouped['今日诊疗人数']  # 排除健康小屋的签约率
+    grouped['签约率'] = grouped['本机构签约人数'] / grouped['今日诊疗人数']  # 排除特殊团队的签约率
 
     # 计算排名
     grouped['建档率排名'] = grouped['建档率'].rank(ascending=False, method='dense').astype(int)
@@ -129,21 +135,18 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         # 计算新建档率排名
         grouped['新建档率排名'] = grouped['新建档率'].rank(ascending=False, method='dense').astype(int)
 
-    # 新签约统计 - 排除健康小屋-yey团队
+    # 新签约统计 - 排除特殊团队
     new_sign_df = None
-    health_hut_sign_df = None
+    special_teams_sign_df = None
+    renewal_sign_df = None  # 新增：存储续约名单
 
-    # 新签约统计 - 排除健康小屋-yey团队
+    # 新签约统计 - 排除特殊团队
     if '签约日期' in df.columns:
         # 筛选在统计时间段内签约的记录，且必须是本机构签约
         new_sign_mask = (df['签约日期'] >= pd.Timestamp(start_date)) & \
                         (df['签约日期'] <= pd.Timestamp(end_date)) & \
                         (df['是否本机构签约'] == 1) & \
                         (df['签约日期'].dt.date == df['就诊日期'].dt.date)  # 关键修改：签约=就诊日
-
-        # 特殊团队列表
-        # special_teams = ['第一家医团队', '第十三家医团队', '第五家医团队']
-        special_teams = ['第一家医团队', '第二家医团队', '第十三家医团队']
 
         # 如果有首次签约日期列，并且有团队名称列
         if '首次签约日期' in df.columns and '团队名称' in df.columns:
@@ -152,13 +155,13 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
                 df['首次签约日期'] = pd.to_datetime(df['首次签约日期'], errors='coerce')
 
             # 对于特殊团队，添加首次签约日期等于签约日期的条件
-            special_team_mask = df['团队名称'].isin(special_teams)
+            special_team_mask = df['团队名称'].isin(SPECIAL_TEAMS)
 
             # 特殊团队的条件：首次签约日期等于签约日期
             special_team_condition = (df['首次签约日期'].dt.date == df['签约日期'].dt.date)
 
             # 非特殊团队不需要首次签约日期条件
-            non_special_team_condition = ~df['团队名称'].isin(special_teams)
+            non_special_team_condition = ~df['团队名称'].isin(SPECIAL_TEAMS)
 
             # 组合条件：特殊团队需要满足首次签约条件，非特殊团队不需要
             first_sign_condition = (special_team_mask & special_team_condition) | non_special_team_condition
@@ -166,22 +169,22 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
             # 将条件加入mask
             new_sign_mask = new_sign_mask & first_sign_condition
 
-            st.success(f"已对特殊团队({', '.join(special_teams)})应用首次签约日期条件")
+            st.success(f"已对特殊团队({', '.join(SPECIAL_TEAMS)})应用首次签约日期条件")
         else:
             if '首次签约日期' not in df.columns:
                 st.warning("数据中缺少 '首次签约日期' 列，所有团队仅使用签约日期进行统计")
             if '团队名称' not in df.columns:
                 st.warning("数据中缺少 '团队名称' 列，无法识别特殊团队")
 
-        # 分离健康小屋-yey团队的签约数据
-        health_hut_mask = new_sign_mask & (df['团队名称'] == '健康小屋-yey')
-        health_hut_sign_df = df[health_hut_mask].copy()
+        # 分离特殊团队的签约数据
+        special_teams_mask = new_sign_mask & (df['团队名称'].isin(SPECIAL_TEAMS))
+        special_teams_sign_df = df[special_teams_mask].copy()
 
-        # 排除健康小屋-yey团队的签约数据
-        new_sign_mask = new_sign_mask & (df['团队名称'] != '健康小屋-yey')
+        # 排除特殊团队的签约数据
+        new_sign_mask = new_sign_mask & (~df['团队名称'].isin(SPECIAL_TEAMS))
         new_sign_df = df[new_sign_mask].copy()
 
-        # 计算每个医生的新签约人数（排除健康小屋）
+        # 计算每个医生的新签约人数（排除特殊团队）
         new_sign_grouped = new_sign_df.groupby('诊疗医生', as_index=False).agg(
             新签约人数=('是否本机构签约', 'sum')
         )
@@ -203,10 +206,31 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
         # 计算新签约人数排名
         grouped['新签约人数排名'] = grouped['新签约人数'].rank(ascending=False, method='dense').astype(int)
 
+        # 续约统计：首次签约日期和签约日期不同一天，且签约日期=就诊日期
+        renewal_mask = (df['签约日期'] >= pd.Timestamp(start_date)) & \
+                       (df['签约日期'] <= pd.Timestamp(end_date)) & \
+                       (df['是否本机构签约'] == 1) & \
+                       (df['签约日期'].dt.date == df['就诊日期'].dt.date) & \
+                       (df['首次签约日期'].notna()) & \
+                       (df['首次签约日期'].dt.date != df['签约日期'].dt.date)
+        # 排除特殊团队
+        renewal_mask = renewal_mask & (~df['团队名称'].isin(SPECIAL_TEAMS))
+        renewal_sign_df = df[renewal_mask].copy()
+        # 计算每个医生的续约人数
+        renewal_grouped = renewal_sign_df.groupby('诊疗医生', as_index=False).agg(
+            续约人数=('是否本机构签约', 'sum')
+        )
+        # 合并到主统计表
+        grouped = pd.merge(grouped, renewal_grouped, on='诊疗医生', how='left')
+        grouped['续约人数'] = grouped['续约人数'].fillna(0).astype(int)
+
+        # 保存续约名单到session state
+        st.session_state.renewal_sign_list = renewal_sign_df
+
     # 调整列顺序：建档相关放一起，签约相关放一起
     base_columns = ['诊疗医生', '今日诊疗人数']
     file_columns = ['本机构建档人数', '外机构建档人数', '剩余未建档人数', '建档率', '建档率排名']
-    sign_columns = ['本机构签约人数', '外机构签约人数', '健康小屋签约人数', '剩余未签约人数', '签约率', '签约率排名']
+    sign_columns = ['本机构签约人数', '外机构签约人数', '特殊团队签约人数', '剩余未签约人数', '签约率', '签约率排名']
 
     # 添加新建档相关列（如果存在）
     if '新建档人数' in grouped.columns:
@@ -229,7 +253,7 @@ def calculate_doctor_performance(df, start_date=None, end_date=None):
 
     grouped = grouped[final_columns]
 
-    return grouped, new_file_df, new_sign_df, health_hut_sign_df
+    return grouped, new_file_df, new_sign_df, special_teams_sign_df
 
 
 # 生成医生绩效图表 - 统一使用Plotly分组条形图
@@ -293,18 +317,22 @@ def generate_performance_charts(performance_df):
     try:
         # 3. 医生签约统计图（包含今日诊疗人数、本机构签约人数、外机构签约人数）
         performance_df = performance_df.sort_values('本机构签约人数', ascending=False)
+        # 创建签约统计图 - 包含特殊团队签约和续约人数
+        y_columns = ['今日诊疗人数', '本机构签约人数', '外机构签约人数', '特殊团队签约人数']
+        # 如果有续约人数，添加到图表中
+        if '续约人数' in performance_df.columns:
+            y_columns.append('续约人数')
+        y_columns.append('剩余未签约人数')
 
-        # 创建签约统计图 - 包含健康小屋签约
         fig3 = px.bar(
             performance_df,
             x='诊疗医生',
-            y=['今日诊疗人数', '本机构签约人数', '外机构签约人数', '健康小屋签约人数', '剩余未签约人数'],
+            y=y_columns,
             title='医生签约统计（含今日诊疗人数）',
             labels={'value': '人数', 'variable': '类型'},
             barmode='group',
-            color_discrete_sequence=['#636EFA', '#00CC96', '#AB63FA', '#FFD700', '#FFA15A']
+            color_discrete_sequence=['#636EFA', '#00CC96', '#AB63FA', '#FFD700', '#FF69B4', '#FFA15A']
         )
-
         fig3.update_layout(
             legend_title_text='统计类型',
             xaxis_title='医生姓名',
@@ -533,7 +561,7 @@ def main():
         border-radius: 10px;
         margin-bottom: 1.5rem;
     }
-    .health-hut-card {
+    .special-teams-card {
         background-color: #ffecb3;
         border-radius: 10px;
         padding: 15px;
@@ -597,8 +625,8 @@ def main():
         st.session_state.new_sign_list = None
     if 'new_file_list' not in st.session_state:
         st.session_state.new_file_list = None
-    if 'health_hut_sign_list' not in st.session_state:
-        st.session_state.health_hut_sign_list = None
+    if 'special_teams_sign_list' not in st.session_state:
+        st.session_state.special_teams_sign_list = None
 
     if uploaded_file is not None:
         try:
@@ -637,13 +665,13 @@ def main():
             if st.button("计算绩效指标", key="calculate_perf"):
                 with st.spinner('正在计算绩效指标...'):
                     start_time = time.time()
-                    performance_df, new_file_list, new_sign_list, health_hut_sign_list = calculate_doctor_performance(
+                    performance_df, new_file_list, new_sign_list, special_teams_sign_list = calculate_doctor_performance(
                         df_processed,
                         start_date, end_date)
                     st.session_state.performance_df = performance_df
                     st.session_state.new_file_list = new_file_list
                     st.session_state.new_sign_list = new_sign_list
-                    st.session_state.health_hut_sign_list = health_hut_sign_list
+                    st.session_state.special_teams_sign_list = special_teams_sign_list
 
                     end_time = time.time()
                     st.success(f"计算完成! 耗时: {end_time - start_time:.2f}秒")
@@ -672,12 +700,12 @@ def main():
                         if '新签约率排名' not in formatted_df.columns:
                             formatted_df['新签约率排名'] = 'N/A'
 
-                    # 显示表格 - 确保包含健康小屋签约人数
+                    # 显示表格 - 确保包含特殊团队签约人数
                     st.dataframe(formatted_df)
 
                     # 关键指标摘要
                     st.subheader("📌 关键指标摘要")
-                    # 第一行：今日诊疗人数 本机构建档率 本机构签约率 健康小屋签约人数
+                    # 第一行：今日诊疗人数 本机构建档率 本机构签约率 特殊团队签约人数
                     col1, col2, col3, col4 = st.columns(4)
                     # 计算总计
                     total_visits = performance_df['今日诊疗人数'].sum()
@@ -688,7 +716,7 @@ def main():
                     # 新增：未建档和剩余未签约人数
                     total_unfilled = performance_df['剩余未建档人数'].sum()
                     total_unsigned = performance_df['剩余未签约人数'].sum()
-                    total_health_hut = performance_df['健康小屋签约人数'].sum()
+                    total_special_teams = performance_df['特殊团队签约人数'].sum()
                     # 第一行使用浅紫色
                     col1.markdown(
                         '<div class="new-file-card purple"><div class="metric-title">今日诊疗人数</div><div class="metric-value">{}</div></div>'.format(
@@ -703,8 +731,8 @@ def main():
                             total_local_signs / total_visits),
                         unsafe_allow_html=True)
                     col4.markdown(
-                        '<div class="new-file-card purple"><div class="metric-title">健康小屋签约人数</div><div class="metric-value">{}</div></div>'.format(
-                            total_health_hut),
+                        '<div class="new-file-card purple"><div class="metric-title">特殊团队签约人数</div><div class="metric-value">{}</div></div>'.format(
+                            total_special_teams),
                         unsafe_allow_html=True)
                     # 第二行：可直接建档人数 可直接签约人数  外机构建档人数 外机构签约人数
                     col1, col2, col3, col4 = st.columns(4)
@@ -770,21 +798,21 @@ def main():
                             f'{total_new_signs_unrepeated / (total_unsigned + total_new_signs_unrepeated):.2%}</div></div>',
                             unsafe_allow_html=True)
 
-                    # 第四行：如果有健康小屋-yey团队签约名单 就在第四行加一个 当日健康小屋签约人数
-                    if st.session_state.health_hut_sign_list is not None and not st.session_state.health_hut_sign_list.empty:
+                    # 第四行：如果有特殊团队签约名单 就在第四行加一个 当日特殊团队签约人数
+                    if st.session_state.special_teams_sign_list is not None and not st.session_state.special_teams_sign_list.empty:
                         col1, col2, col3, col4 = st.columns(4)
-                        # 健康小屋签约人数也根据身份证号去重
-                        health_hut_count = st.session_state.health_hut_sign_list['身份证号'].nunique()
+                        # 特殊团队签约人数也根据身份证号去重
+                        special_teams_count = st.session_state.special_teams_sign_list['身份证号'].nunique()
                         col1.markdown(
-                            f'<div class="health-hut-card"><div class="metric-title">当日健康小屋签约人数</div><div class="metric-value">{health_hut_count}</div></div>',
+                            f'<div class="special-teams-card"><div class="metric-title">当日特殊团队签约人数</div><div class="metric-value">{special_teams_count}</div></div>',
                             unsafe_allow_html=True)
 
-                # 健康小屋-yey团队签约名单展示
-                if st.session_state.health_hut_sign_list is not None and not st.session_state.health_hut_sign_list.empty:
-                    st.subheader("🏠 健康小屋-yey团队签约名单")
+                # 特殊团队签约名单展示
+                if st.session_state.special_teams_sign_list is not None and not st.session_state.special_teams_sign_list.empty:
+                    st.subheader(f"🏠 特殊团队签约名单")
                     st.write(
-                        f"在 {start_date} 至 {end_date} 期间健康小屋-yey团队签约的患者列表 (共{len(st.session_state.health_hut_sign_list)}人)：")
-                    st.dataframe(st.session_state.health_hut_sign_list[['诊疗医生', '身份证号', '签约日期']])
+                        f"在 {start_date} 至 {end_date} 期间特殊团队签约的患者列表 (共{len(st.session_state.special_teams_sign_list)}人)：")
+                    st.dataframe(st.session_state.special_teams_sign_list[['诊疗医生', '身份证号', '签约日期']])
 
                 # 生成图表
                 st.subheader("📈 绩效可视化")
@@ -829,10 +857,10 @@ def main():
                         if st.session_state.new_sign_list is not None:
                             st.session_state.new_sign_list.to_excel(writer, sheet_name='新签约名单', index=False)
 
-                        # 如果有健康小屋签约名单，也导出
-                        if st.session_state.health_hut_sign_list is not None:
-                            st.session_state.health_hut_sign_list.to_excel(writer, sheet_name='健康小屋签约名单',
-                                                                           index=False)
+                        # 如果有特殊团队签约名单，也导出
+                        if st.session_state.special_teams_sign_list is not None:
+                            st.session_state.special_teams_sign_list.to_excel(writer, sheet_name='特殊团队签约名单',
+                                                                              index=False)
                 except Exception as e:
                     st.error(f"导出Excel时出错: {e}")
                 output.seek(0)
